@@ -7,6 +7,9 @@ const mkdtemp = common.mkdtemp;
 const extract_file = common.extract_file;
 
 const c = @cImport({
+    @cDefine("_GNU_SOURCE", {});
+    @cDefine("LIBCRUN_PUBLIC", "");
+    @cInclude("pwd.h");
     @cInclude("libcrun/container.h");
     @cInclude("libcrun/custom-handler.h");
     @cInclude("subid.h");
@@ -16,6 +19,11 @@ extern fn squashfuse_main(argc: c_int, argv: [*:null]const ?[*:0]const u8) c_int
 extern fn overlayfs_main(argc: c_int, argv: [*:null]const ?[*:0]const u8) c_int;
 
 const eql = std.mem.eql;
+
+fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {
+    const s = try std.fmt.allocPrint(allocator, fmt ++ "\x00", args);
+    return s[0 .. s.len - 1 :0];
+}
 
 // inspired from std.posix.getenv
 fn getEnvFull(key: []const u8) ?[:0]const u8 {
@@ -137,17 +145,17 @@ const IdMapParser = struct {
 
 fn parseIdmap(allocator: Allocator, bytes: []const u8) !IDMappings {
     var idmap_parser = IdMapParser{ .bytes = bytes };
-    var id_mappings = std.ArrayList(IDMapping).init(allocator);
+    var id_mappings = try std.ArrayList(IDMapping).initCapacity(allocator, 0);
 
     while (idmap_parser.nextNumber()) |containerID| {
-        try id_mappings.append(IDMapping{
+        try id_mappings.append(allocator, IDMapping{
             .containerID = containerID,
             .hostID = idmap_parser.nextNumber() orelse std.debug.panic("must have 3 numbers\n", .{}),
             .size = idmap_parser.nextNumber() orelse std.debug.panic("must have 3 numbers\n", .{}),
         });
     }
 
-    return id_mappings.toOwnedSlice();
+    return id_mappings.toOwnedSlice(allocator);
 }
 
 fn updateIdMap(id_mappings: IDMappings) void {
@@ -165,14 +173,13 @@ fn getContainerFromArgs(file: std.fs.File, rootfs_absolute_path: []const u8, par
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var jsonReader = std.json.reader(allocator, file.reader());
+    const file_contents = try file.readToEndAlloc(allocator, 100 * 1024 * 1024);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, file_contents, .{ .max_value_len = 99999999 });
+    var root_value = parsed.value;
 
-    // TODO: having to specify max_value_len seems like a bug
-    var root_value = try std.json.Value.jsonParse(allocator, &jsonReader, .{ .max_value_len = 99999999 });
-
-    var args_json: *std.ArrayList(std.json.Value) = undefined;
-    var env_json: *std.ArrayList(std.json.Value) = undefined;
-    var mounts_json: *std.ArrayList(std.json.Value) = undefined;
+    var args_json: *std.json.Array = undefined;
+    var env_json: *std.json.Array = undefined;
+    var mounts_json: *std.json.Array = undefined;
 
     switch (root_value) {
         .object => |*object| {
@@ -294,10 +301,10 @@ fn getContainerFromArgs(file: std.fs.File, rootfs_absolute_path: []const u8, par
     }
 
     const stringified_config = stringified_config: {
-        var list = std.ArrayList(u8).init(allocator);
-        errdefer list.deinit();
-        try std.json.stringifyArbitraryDepth(allocator, root_value, .{}, list.writer());
-        break :stringified_config try list.toOwnedSliceSentinel(0);
+        var list = try std.ArrayList(u8).initCapacity(allocator, 0);
+        errdefer list.deinit(allocator);
+        try list.writer(allocator).print("{f}", .{std.json.fmt(root_value, .{})});
+        break :stringified_config try list.toOwnedSliceSentinel(allocator, 0);
     };
 
     var err: c.libcrun_error_t = null;
@@ -380,25 +387,29 @@ pub fn main() !u8 {
 
         const egid = std.os.linux.getegid();
 
-        const username = try allocator.dupeZ(u8, std.mem.span((std.c.getpwuid(euid) orelse @panic("couldn't get username")).pw_name orelse @panic("couldn't get username")));
+        const username = try allocator.dupeZ(u8, std.mem.span(blk: {
+            const pw = c.getpwuid(@as(c.uid_t, euid));
+            if (pw == null) @panic("couldn't get username");
+            break :blk pw.*.pw_name;
+        }));
         defer allocator.free(username);
 
         var subuid_ranges: [*]c.subid_range = undefined;
         var subgid_ranges: [*]c.subid_range = undefined;
 
-        var uid_mappings = std.ArrayList(IDMapping).init(allocator);
-        defer uid_mappings.deinit();
+        var uid_mappings = try std.ArrayList(IDMapping).initCapacity(allocator, 0);
+        defer uid_mappings.deinit(allocator);
 
-        try uid_mappings.append(IDMapping{
+        try uid_mappings.append(allocator, IDMapping{
             .containerID = 0,
             .hostID = euid,
             .size = 1,
         });
 
-        var gid_mappings = std.ArrayList(IDMapping).init(allocator);
-        defer gid_mappings.deinit();
+        var gid_mappings = try std.ArrayList(IDMapping).initCapacity(allocator, 0);
+        defer gid_mappings.deinit(allocator);
 
-        try gid_mappings.append(IDMapping{
+        try gid_mappings.append(allocator, IDMapping{
             .containerID = 0,
             .hostID = egid,
             .size = 1,
@@ -409,7 +420,7 @@ pub fn main() !u8 {
 
         if (subuid_ranges_len > 0) {
             for (0..@intCast(subuid_ranges_len)) |i| {
-                try uid_mappings.append(IDMapping{
+                try uid_mappings.append(allocator, IDMapping{
                     .containerID = @intCast(subuid_ranges[i].start),
                     .hostID = @intCast(subuid_ranges[i].start),
                     .size = @intCast(subuid_ranges[i].count),
@@ -419,7 +430,7 @@ pub fn main() !u8 {
 
         if (subgid_ranges_len > 0) {
             for (0..@intCast(subgid_ranges_len)) |i| {
-                try gid_mappings.append(IDMapping{
+                try gid_mappings.append(allocator, IDMapping{
                     .containerID = @intCast(subgid_ranges[i].start),
                     .hostID = @intCast(subgid_ranges[i].start),
                     .size = @intCast(subgid_ranges[i].count),
@@ -499,16 +510,16 @@ pub fn main() !u8 {
     var temp_dir_path = "/tmp/dockerc-XXXXXX".*;
     try mkdtemp(&temp_dir_path);
 
-    const filesystem_bundle_dir_null = try std.fmt.allocPrintZ(allocator, "{s}/{s}", .{ temp_dir_path, "bundle.squashfs" });
+    const filesystem_bundle_dir_null = try allocPrintZ(allocator, "{s}/{s}", .{ temp_dir_path, "bundle.squashfs" });
     defer allocator.free(filesystem_bundle_dir_null);
 
     try std.fs.makeDirAbsolute(filesystem_bundle_dir_null);
 
-    const mount_dir_path = try std.fmt.allocPrintZ(allocator, "{s}/mount", .{temp_dir_path});
+    const mount_dir_path = try allocPrintZ(allocator, "{s}/mount", .{temp_dir_path});
     defer allocator.free(mount_dir_path);
 
     const footer = try common.getFooter(executable_path);
-    const offsetArg = try std.fmt.allocPrintZ(allocator, "offset={}", .{footer.offset});
+    const offsetArg = try allocPrintZ(allocator, "offset={}", .{footer.offset});
     defer allocator.free(offsetArg);
 
     const args_buf = [_:null]?[*:0]const u8{ "squashfuse", "-o", offsetArg, executable_path, filesystem_bundle_dir_null };
@@ -526,7 +537,7 @@ pub fn main() !u8 {
         }
     }
 
-    const overlayfs_options = try std.fmt.allocPrintZ(allocator, "lowerdir={s},upperdir={s}/upper,workdir={s}/work", .{
+    const overlayfs_options = try allocPrintZ(allocator, "lowerdir={s},upperdir={s}/upper,workdir={s}/work", .{
         filesystem_bundle_dir_null,
         temp_dir_path,
         temp_dir_path,

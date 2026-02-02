@@ -1,40 +1,70 @@
 .{
-    .name = "dockerc",
-    // This is a [Semantic Version](https://semver.org/).
-    // In a future version of Zig it will be used for package deduplication.
+    .name = .dockerc,
     .version = "0.3.2",
-
-    // This field is optional.
-    // This is currently advisory only; Zig does not yet do anything
-    // with this value.
-    //.minimum_zig_version = "0.11.0",
-
-    // This field is optional.
-    // Each dependency must either provide a `url` and `hash`, or a `path`.
-    // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
-    // Once all dependencies are fetched, `zig build` no longer requires
-    // internet connectivity.
+    .fingerprint = 0xae2c55c51bd2c9a7,
     .dependencies = .{
         .clap = .{
-            .url = "https://github.com/Hejsil/zig-clap/archive/60cd46aacff4960104703da9ba683077b1e3c76c.tar.gz",
-            .hash = "12205eb22c644df2469045083efe9c92189d56494ebe8901b36ef1218c3717e6eb78",
+            .url = "git+https://github.com/Hejsil/zig-clap.git#0.11.0",
+            .hash = "clap-0.11.0-oBajB-HnAQDPCKYzwF7rO3qDFwRcD39Q0DALlTSz5H7e",
         },
         .shadow = .{
-            .url = "https://github.com/shadow-maint/shadow/releases/download/4.15.3/shadow-4.15.3.tar.gz",
-            .hash = "12202972bc830245199eb4c5b10f853f1be094eb8c86d431299a69b1c01fa5781a7e",
+            .url = "git+https://github.com/shadow-maint/shadow.git#4.15.3",
+            .hash = "1220068a6168d945bcddbdffcdb0ec49cd8f7f4cebc23d764975244de73fdd3930e4",
+        },
+        .umoci = .{
+            .url = "git+https://github.com/opencontainers/umoci.git#2abf0e66c3eb6e944f0c1e4a29df699da3e373be",
+            .hash = "1220f55e9b1c087e1d00410db9a51b17ef3092eac5d39ef09013cfcc8e442e3738ff",
+        },
+        .skopeo = .{
+            .url = "git+https://github.com/containers/skopeo.git#5f9e5d79be809336a1474d969165890756770543",
+            .hash = "122032c653f665594633ac8a0dd62180de231b262338e66a72b1a6340dc43018d32d",
+        },
+        .crun = .{
+            .url = "git+https://github.com/NilsIrl/crun.git?ref=dockerc#fe982fafdd2487d408045eca3aaf4dff986d458b",
+            .hash = "N-V-__8AABNGGQBYZDE0664FDYCPCc3xUrObBxtANITXGSJM",
+        },
+        .libocispec = .{
+            .url = "git+https://github.com/containers/libocispec.git#7b27d0a0bb87fdd7ee46365994e450a58405004f",
+            .hash = "122084cd200065e5f59491e7c3e238c231b21dcf4c22757548d020c7a90efc448720",
+        },
+        .yajl = .{
+            .url = "git+https://github.com/containers/yajl.git#6bc5219389fd2752631682b0a8368e6d8218a8c5",
+            .hash = "122019925b96397b2042e17afed6a2687208022e04d60327cbaced5be993ac3d83d5",
+        },
+        .runtime_spec = .{
+            .url = "git+https://github.com/opencontainers/runtime-spec.git#cb7ae92f1f5c64a38f67387af2e636e93c8af15e",
+            .hash = "12208b7d78023bea57eb10c8f9685c5fee7008f237d9a6aa256aa912625dc5147928",
+        },
+        .image_spec = .{
+            .url = "git+https://github.com/opencontainers/image-spec.git#f5f87016de46439ccf91b5381cf76faaae2bc28f",
+            .hash = "1220c96f8e9f17a64348f98ca0fbb1b88dc133dbc22a99542963dec0ab9063615927",
+        },
+        .squashfs_tools = .{
+            .url = "git+https://github.com/plougher/squashfs-tools.git#4e295500bccaa17524509bb700e147bd73b629d7",
+            .hash = "1220cb11bcf25e6a8542ead60876446aeaadf4a1bb600be7bffdca94cfdc6c3a5a7e",
+        },
+        .zstd = .{
+            .url = "git+https://github.com/facebook/zstd.git#1168da0e567960d50cba1b58c9b0ba047ece4733",
+            .hash = "1220e49117486073e1c45791b1b52cea3dd546dfda697f9163dd76888e3b3dff3025",
+        },
+        .squashfuse = .{
+            .url = "git+https://github.com/vasi/squashfuse.git#e1e237a7ee9f0646d05aa85d20939c49555279db",
+            .hash = "12204fe4056ca04eb2a1f2537c2b94fcf7cb1bc24557fc841132b4fb65c2055e3d4b",
+        },
+        .fuse_overlayfs = .{
+            .url = "git+https://github.com/containers/fuse-overlayfs.git#51108ae00fd52e7d9ece7301aaa6f7a699828b58",
+            .hash = "122022b83387ab4a999993d9390d88b249e7f3b50f81105d6a1ae50f6b893ddcd795",
+        },
+        .libfuse = .{
+            .url = "git+https://github.com/libfuse/libfuse.git#029ab1ffd28ded27164924fcf019af0f38293f65",
+            .hash = "12202228c6e04dd0054ce66ba41a9129de03d1118dc02ceed39ed63e0d04daa62497",
+        },
+        .argp_standalone = .{
+            .url = "git+https://github.com/argp-standalone/argp-standalone.git#8ded2bc942740b5d291e450af661c5090dc3ca38",
+            .hash = "1220628f59a3f94c778e24be0d6928015a52f91a84655dff2e78f4bbe2d5f9e401d9",
         },
     },
     .paths = .{
-        // This makes *all* files, recursively, included in this package. It is generally
-        // better to explicitly list the files and directories instead, to insure that
-        // fetching from tarballs, file system paths, and version control all result
-        // in the same contents hash.
         "",
-        // For example...
-        //"build.zig",
-        //"build.zig.zon",
-        //"src",
-        //"LICENSE",
-        //"README.md",
     },
 }

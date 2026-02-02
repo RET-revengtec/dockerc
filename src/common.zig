@@ -47,7 +47,7 @@ pub fn getFooter(path: []const u8) !Footer {
 }
 
 pub fn writeFooter(file: std.fs.File, footer: Footer) !void {
-    comptime std.debug.assert(@typeInfo(Footer).Struct.layout != .auto);
+    comptime std.debug.assert(@typeInfo(Footer).@"struct".layout != .auto);
 
     if (native_endian != std.builtin.Endian.little) {
         std.mem.byteSwapAllFields(Footer, &footer);
