@@ -186,6 +186,13 @@ fn getContainerFromArgs(file: std.fs.File, rootfs_absolute_path: []const u8, par
             const processVal = object.getPtr("process") orelse @panic("no process key");
             switch (processVal.*) {
                 .object => |*process| {
+                    // If stdin isn't a TTY (e.g. running under a service, CI, or with redirected
+                    // stdin), asking the runtime for a terminal can fail (e.g. tcgetattr).
+                    // Align behavior with exec-runtimes: disable terminal allocation.
+                    if (!std.posix.isatty(std.posix.STDIN_FILENO)) {
+                        try process.put("terminal", std.json.Value{ .bool = false });
+                    }
+
                     const argsVal = process.getPtr("args") orelse @panic("no args key");
                     switch (argsVal.*) {
                         .array => |*argsArr| {
@@ -359,7 +366,15 @@ fn umount(path: [*:0]const u8) void {
     if (umountRet != 0) {
         assert(umountRet < 0 and umountRet > -4096);
         const errno: std.posix.E = @enumFromInt(-umountRet);
-        std.debug.panic("Failed to unmount {s}. Errno: {}\n", .{ path, errno });
+        if (errno == .BUSY) {
+            const MNT_DETACH: u32 = 2;
+            const umount2_ret: i64 = @bitCast(std.os.linux.umount2(path, MNT_DETACH));
+            if (umount2_ret == 0) return;
+        }
+
+        if (std.posix.getenv("DOCKERC_DEBUG_RUNTIME") != null) {
+            std.debug.print("warn: failed to unmount {s}: {}\n", .{ path, errno });
+        }
     }
 }
 
@@ -519,10 +534,12 @@ pub fn main() !u8 {
     defer allocator.free(mount_dir_path);
 
     const footer = try common.getFooter(executable_path);
-    const offsetArg = try allocPrintZ(allocator, "offset={}", .{footer.offset});
-    defer allocator.free(offsetArg);
+    const host_euid = std.os.linux.geteuid();
+    const host_egid = std.os.linux.getegid();
+    const squashfuse_opts = try allocPrintZ(allocator, "offset={},uid={},gid={}", .{ footer.offset, host_euid, host_egid });
+    defer allocator.free(squashfuse_opts);
 
-    const args_buf = [_:null]?[*:0]const u8{ "squashfuse", "-o", offsetArg, executable_path, filesystem_bundle_dir_null };
+    const args_buf = [_:null]?[*:0]const u8{ "squashfuse", "-o", squashfuse_opts, executable_path, filesystem_bundle_dir_null };
 
     {
         const pid = try std.posix.fork();

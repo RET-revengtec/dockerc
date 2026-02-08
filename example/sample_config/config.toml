@@ -1,0 +1,32 @@
+# dockerc example config (TOML)
+#
+# Run from repo root:
+#   make example
+# or directly:
+#   ./zig-out/bin/dockerc -c example/sample_config/config.toml
+
+# Container image to pull (skopeo transport is supported too).
+image = "docker://docker.io/library/alpine:latest"
+
+# Output path for generated binary.
+# The Makefile target creates example/out/ for you.
+output = "example/out/alpine"
+
+# Optional: override target architecture ("amd64" or "arm64").
+arch = "amd64"
+
+# Runtime to use.
+# - "crun" uses the embedded runtime (default).
+# - Other runtimes use the exec-runtime wrapper and will resolve a runtime binary.
+#
+# Runtime value supports a version/source suffix:
+# - "<name>@latest"  -> download latest release into cache
+# - "<name>@<semver>" -> download that version (e.g. "runc@1.1.12")
+# - "<name>"         -> auto mode (portability-first: latest download)
+runtime = "runc"
+
+# Path to the runtime binary to copy into the bundle when `runtime != "crun"`.
+# runtime_path = "/usr/bin/runc"
+
+# Optional: if true, do not use rootless container.
+rootfull = false

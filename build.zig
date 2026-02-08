@@ -125,9 +125,15 @@ pub fn build(b: *std.Build) void {
     cp_sf.step.dependOn(&clean_sf.step);
     cp_sf.step.dependOn(&mk_deps_initial.step);
 
+    const patch_sf = b.addSystemCommand(&[_][]const u8{
+        "sed", "-i", "s/AC_MSG_FAILURE(\\[At least one decompression library must exist\\])/AC_MSG_WARN([Skipping decompression check])/", "configure.ac",
+    });
+    patch_sf.setCwd(b.path(build_sf_dir));
+    patch_sf.step.dependOn(&cp_sf.step);
+
     const sf_autogen = b.addSystemCommand(&[_][]const u8{ "autoreconf", "-vfi" });
     sf_autogen.setCwd(b.path(build_sf_dir));
-    sf_autogen.step.dependOn(&cp_sf.step);
+    sf_autogen.step.dependOn(&patch_sf.step);
 
     const sf_configure = b.addSystemCommand(&[_][]const u8{
         "./configure",
@@ -135,7 +141,7 @@ pub fn build(b: *std.Build) void {
         "--without-xz",
         "--without-lzo",
         "--without-lz4",
-        "--with-zstd",
+        "--without-zstd",
     });
     sf_configure.setCwd(b.path(build_sf_dir));
     sf_configure.step.dependOn(&sf_autogen.step);
@@ -247,6 +253,7 @@ pub fn build(b: *std.Build) void {
             "-Dmain=squashfuse_main",
             "-D_FILE_OFFSET_BITS=64",
             "-DFUSE_USE_VERSION=317",
+            "-DHAVE_ZSTD_H=1",
         },
     });
 
@@ -318,14 +325,14 @@ pub fn build(b: *std.Build) void {
     const build_shadow_dir = "deps/shadow";
     const shadow_dep = b.dependency("shadow", .{});
 
-    const clean_build_shadow = b.addSystemCommand(&[_][]const u8{
+    const clean_shadow = b.addSystemCommand(&[_][]const u8{
         "rm", "-rf", build_shadow_dir,
     });
 
     const mk_build_shadow = b.addSystemCommand(&[_][]const u8{
         "mkdir", "-p", build_shadow_dir,
     });
-    mk_build_shadow.step.dependOn(&clean_build_shadow.step);
+    mk_build_shadow.step.dependOn(&clean_shadow.step);
 
     const cp_shadow = b.addSystemCommand(&[_][]const u8{
         "cp", "-rT",
@@ -338,8 +345,8 @@ pub fn build(b: *std.Build) void {
         "autoreconf", "-vfi",
     });
     shadow_autogen.setCwd(b.path(build_shadow_dir));
-    // shadow_autogen.step.dependOn(&cp_shadow.step);
     shadow_autogen.step.dependOn(&cp_shadow.step);
+    // shadow_autogen.step.dependOn(&cp_shadow.step);
 
     const shadow_configure = b.addSystemCommand(&[_][]const u8{
         "./configure",
@@ -353,8 +360,12 @@ pub fn build(b: *std.Build) void {
         "--without-attr",
         "--without-audit",
         "--without-nscd",
+        "--without-libbsd",
+        "--without-sssd",
     });
-    // shadow_configure.setEnvironmentVariable("CC", cc); // Use native gcc to avoid environment issues in subdir
+    shadow_configure.setEnvironmentVariable("CC", cc); // Use native gcc to avoid environment issues in subdir
+    shadow_configure.setEnvironmentVariable("ac_cv_lib_crypt_crypt", "yes");
+    shadow_configure.setEnvironmentVariable("ac_cv_func_readpassphrase", "yes");
     shadow_configure.setEnvironmentVariable("CFLAGS", "-isystem /usr/include/bsd -DLIBBSD_OVERLAY");
     // shadow_configure.setEnvironmentVariable("LDFLAGS", "-L/usr/lib -L/usr/lib/x86_64-linux-gnu");
     shadow_configure.setCwd(b.path(build_shadow_dir));
@@ -363,8 +374,6 @@ pub fn build(b: *std.Build) void {
     // We also need to build it? Or just configure?
     // We are compiling sources manually below. Configure should generate config.h and Makefiles.
     // That should be enough for headers.
-
-    const prepare_shadow_step = &shadow_configure.step;
 
     const runtime = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -514,6 +523,70 @@ pub fn build(b: *std.Build) void {
     runtime_x86_64.root_module.addImport("runtime_lib", runtime);
     runtime_aarch64.root_module.addImport("runtime_lib", runtime);
 
+    const runtime_exec_lib = b.createModule(.{
+        .root_source_file = b.path("src/runtime_exec.zig"),
+        .link_libc = true,
+    });
+    runtime_exec_lib.addOptions("build_info", build_info);
+    runtime_exec_lib.addImport("zstd", zstd);
+    runtime_exec_lib.addImport("fuse-overlayfs", fuse_fss);
+    // Needs headers from shadow
+    runtime_exec_lib.addIncludePath(b.path(build_shadow_dir ++ "/libsubid"));
+    runtime_exec_lib.addIncludePath(b.path(build_shadow_dir ++ "/lib"));
+    runtime_exec_lib.addIncludePath(b.path(build_shadow_dir));
+    // Needs C sources from shadow
+    runtime_exec_lib.addCSourceFiles(.{
+        .root = b.path(build_shadow_dir),
+        .files = &[_][]const u8{
+            "libsubid/api.c",
+            "lib/shadowlog.c",
+            "lib/subordinateio.c",
+            "lib/commonio.c",
+            "lib/write_full.c",
+            "lib/nss.c",
+            "lib/get_pid.c",
+            "lib/memzero.c",
+            "lib/alloc.c",
+            "lib/atoi/str2i.c",
+            "lib/atoi/a2i.c",
+            "lib/atoi/strtou_noneg.c",
+            "lib/atoi/strtoi.c",
+            "lib/string/sprintf.c",
+        },
+        .flags = &[_][]const u8{
+            "-DENABLE_SUBIDS",
+            "-Dxasprintf=shadow_xasprintf",
+        },
+    });
+
+    const runtime_exec_x86_64 = b.addExecutable(.{
+        .name = "runtime_exec_x86-64",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/entry.zig"),
+            .target = x86_64_target,
+            .optimize = optimize,
+        }),
+    });
+    runtime_exec_x86_64.root_module.addImport("runtime_lib", runtime_exec_lib);
+
+    const runtime_exec_aarch64 = b.addExecutable(.{
+        .name = "runtime_exec_aarch64",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/entry.zig"),
+            .target = aarch64_target,
+            .optimize = .Debug,
+        }),
+    });
+    runtime_exec_aarch64.root_module.addImport("runtime_lib", runtime_exec_lib);
+
+    const libocispec_mkdir_m4 = b.addSystemCommand(&[_][]const u8{ "mkdir", "-p", "m4" });
+    libocispec_mkdir_m4.setCwd(libocispec_src_root);
+    libocispec_mkdir_m4.step.dependOn(prepare_crun_step);
+
+    const libocispec_autogen = b.addSystemCommand(&[_][]const u8{ "autoreconf", "-fi" });
+    libocispec_autogen.setCwd(libocispec_src_root);
+    libocispec_autogen.step.dependOn(&libocispec_mkdir_m4.step);
+
     const crun_mkdir_m4 = b.addSystemCommand(&[_][]const u8{ "mkdir", "-p", "m4" });
     crun_mkdir_m4.setCwd(crun_src_root);
     crun_mkdir_m4.step.dependOn(prepare_crun_step);
@@ -521,6 +594,7 @@ pub fn build(b: *std.Build) void {
     const crun_autogen = b.addSystemCommand(&[_][]const u8{ "autoreconf", "-fi" });
     crun_autogen.setCwd(crun_src_root);
     crun_autogen.step.dependOn(&crun_mkdir_m4.step);
+    crun_autogen.step.dependOn(&libocispec_autogen.step);
 
     const crun_configure = b.addSystemCommand(&[_][]const u8{
         "./configure",
@@ -561,12 +635,22 @@ pub fn build(b: *std.Build) void {
         runtime_x86_64.step.dependOn(&sf_make_swap.step);
         runtime_x86_64.step.dependOn(&fov_configure.step);
         runtime_x86_64.step.dependOn(&prepare_headers.step);
-        runtime_x86_64.step.dependOn(prepare_shadow_step);
+        runtime_x86_64.step.dependOn(&shadow_configure.step);
 
         runtime_aarch64.step.dependOn(&sf_make_swap.step);
         runtime_aarch64.step.dependOn(&fov_configure.step);
         runtime_aarch64.step.dependOn(&prepare_headers.step);
-        runtime_aarch64.step.dependOn(prepare_shadow_step);
+        runtime_aarch64.step.dependOn(&shadow_configure.step);
+
+        runtime_exec_x86_64.step.dependOn(&sf_make_swap.step);
+        runtime_exec_x86_64.step.dependOn(&fov_configure.step);
+        runtime_exec_x86_64.step.dependOn(&prepare_headers.step); // Fix for libocispec/crun headers
+        runtime_exec_x86_64.step.dependOn(&shadow_configure.step);
+
+        runtime_exec_aarch64.step.dependOn(&sf_make_swap.step);
+        runtime_exec_aarch64.step.dependOn(&fov_configure.step);
+        runtime_exec_aarch64.step.dependOn(&prepare_headers.step); // Fix for libocispec/crun headers
+        runtime_exec_aarch64.step.dependOn(&shadow_configure.step);
     }
 
     const go_cpu_arch = switch (target.query.cpu_arch orelse target.result.cpu.arch) {
@@ -723,6 +807,16 @@ pub fn build(b: *std.Build) void {
     );
 
     dockerc.root_module.addAnonymousImport(
+        "runtime_exec_x86_64",
+        .{ .root_source_file = runtime_exec_x86_64.getEmittedBin() },
+    );
+
+    dockerc.root_module.addAnonymousImport(
+        "runtime_exec_aarch64",
+        .{ .root_source_file = runtime_exec_aarch64.getEmittedBin() },
+    );
+
+    dockerc.root_module.addAnonymousImport(
         "umoci",
         .{ .root_source_file = umoci_output },
     );
@@ -755,6 +849,16 @@ pub fn build(b: *std.Build) void {
         .{ .root_source_file = runtime_aarch64.getEmittedBin() },
     );
 
+    replace_bin.root_module.addAnonymousImport(
+        "runtime_exec_x86_64",
+        .{ .root_source_file = runtime_exec_x86_64.getEmittedBin() },
+    );
+
+    replace_bin.root_module.addAnonymousImport(
+        "runtime_exec_aarch64",
+        .{ .root_source_file = runtime_exec_aarch64.getEmittedBin() },
+    );
+
     b.installArtifact(replace_bin);
 
     const extract_bin = b.addExecutable(.{
@@ -768,6 +872,86 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(extract_bin);
+
+    const idmap_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/idmap_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const idmap_mod = b.createModule(.{
+        .root_source_file = b.path("src/idmap.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    idmap_test_mod.addImport("idmap", idmap_mod);
+
+    const idmap_tests = b.addTest(.{
+        .name = "idmap",
+        .root_module = idmap_test_mod,
+    });
+    const run_idmap_tests = b.addRunArtifact(idmap_tests);
+
+    const dockerc_config_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/dockerc_config_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const dockerc_config_mod = b.createModule(.{
+        .root_source_file = b.path("src/dockerc_config.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dockerc_config_test_mod.addImport("dockerc_config", dockerc_config_mod);
+
+    const dockerc_config_tests = b.addTest(.{
+        .name = "dockerc_config",
+        .root_module = dockerc_config_test_mod,
+    });
+    const run_dockerc_config_tests = b.addRunArtifact(dockerc_config_tests);
+
+    const runtime_resolver_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/runtime_resolver_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const runtime_resolver_mod = b.createModule(.{
+        .root_source_file = b.path("src/runtime_resolver.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    runtime_resolver_test_mod.addImport("runtime_resolver", runtime_resolver_mod);
+
+    const runtime_resolver_tests = b.addTest(.{
+        .name = "runtime_resolver",
+        .root_module = runtime_resolver_test_mod,
+    });
+    const run_runtime_resolver_tests = b.addRunArtifact(runtime_resolver_tests);
+
+    const runtime_exec_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/runtime_exec_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const runtime_exec_mod = b.createModule(.{
+        .root_source_file = b.path("src/runtime_exec.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    runtime_exec_mod.addOptions("build_info", build_info);
+    runtime_exec_test_mod.addImport("runtime_exec", runtime_exec_mod);
+
+    const runtime_exec_tests = b.addTest(.{
+        .name = "runtime_exec",
+        .root_module = runtime_exec_test_mod,
+    });
+    const run_runtime_exec_tests = b.addRunArtifact(runtime_exec_tests);
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_idmap_tests.step);
+    test_step.dependOn(&run_dockerc_config_tests.step);
+    test_step.dependOn(&run_runtime_resolver_tests.step);
+    test_step.dependOn(&run_runtime_exec_tests.step);
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
